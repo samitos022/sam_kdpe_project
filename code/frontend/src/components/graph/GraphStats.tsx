@@ -38,7 +38,7 @@ export function GraphStats({ utilization: u }: GraphStatsProps) {
         </p>
         <div className="space-y-1.5">
           {Object.entries(u.populated_classes).map(([cls, count]) => (
-            <div key={cls} className="flex items-center gap-2">
+            <div key={cls} className="flex items-center gap-2 text-white">
               <Badge className={`w-28 justify-center ${classHex(cls)}`}>{cls}</Badge>
               <div className="h-2 flex-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
                 <div
