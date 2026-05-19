@@ -1,0 +1,21 @@
+# Backend
+fastapi
+uvicorn
+python-dotenv
+pydantic
+
+# LLM
+litellm
+
+# Database
+neo4j
+
+# Dataset
+datasets          # HuggingFace → per AITA
+biopython         # Entrez API → per PubMed
+requests
+lxml              # parsing XML PubMed
+
+# Data processing
+pandas
+tqdm
