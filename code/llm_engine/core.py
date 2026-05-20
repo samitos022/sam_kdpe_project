@@ -23,11 +23,20 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import litellm
 from dotenv import load_dotenv
 from pydantic import ValidationError
+
+_CODE_DIR = Path(__file__).parent.parent
+if str(_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CODE_DIR))
+
+from logging_config import get_logger, setup_logging
 
 from .parser import (
     ExtractionResult, LLMSchemaProposal, Schema,
@@ -41,6 +50,8 @@ from .prompts import (
 from .schema_manager import SchemaManager
 
 load_dotenv()
+setup_logging()
+logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────
 #  Configuration
@@ -57,7 +68,14 @@ MAX_TOKENS = 4096
 #  Low-level LLM caller
 # ─────────────────────────────────────────────
 
-def _call_llm(system: str, user: str) -> str:
+def _call_llm(
+    system: str,
+    user: str,
+    *,
+    flow: str = "unknown",
+    session_id: str | None = None,
+    doc_id: str | None = None,
+) -> str:
     """
     Single LLM call via LiteLLM. Returns the raw response text.
 
@@ -67,7 +85,10 @@ def _call_llm(system: str, user: str) -> str:
       'ollama/llama3'             → local Ollama
     The model is set in .env as LITELLM_MODEL — no code changes needed
     to switch providers during experimentation.
+
+    Every call is logged as a structured event with timing + token counts.
     """
+    t0 = time.perf_counter()
     response = litellm.completion(
         model=MODEL,
         messages=[
@@ -77,6 +98,27 @@ def _call_llm(system: str, user: str) -> str:
         temperature=TEMPERATURE,
         max_tokens=MAX_TOKENS,
     )
+    latency = round(time.perf_counter() - t0, 3)
+
+    usage = getattr(response, "usage", None)
+    prompt_tokens    = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+
+    logger.info(
+        "llm_call flow=%s latency=%.2fs model=%s",
+        flow, latency, MODEL,
+        extra={
+            "event":             "llm_call",
+            "flow":              flow,
+            "model":             MODEL,
+            "latency_s":         latency,
+            "prompt_tokens":     prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "session_id":        session_id,
+            "doc_id":            doc_id,
+        },
+    )
+
     return response.choices[0].message.content or ""
 
 
@@ -98,23 +140,32 @@ def _parse_json_with_retry(
     system: str,
     user: str,
     retries: int = JSON_PARSE_RETRIES,
+    *,
+    flow: str = "unknown",
+    session_id: str | None = None,
+    doc_id: str | None = None,
 ) -> dict:
     """
     Call LLM and parse JSON. Retries if JSON is malformed (not if Pydantic fails).
     Pydantic failures are handled by the GIV repair loop, not here.
     """
     for attempt in range(retries + 1):
-        raw = _call_llm(system, user)
+        raw = _call_llm(system, user, flow=flow, session_id=session_id, doc_id=doc_id)
         try:
             return json.loads(_extract_json(raw))
         except json.JSONDecodeError as e:
             if attempt == retries:
+                logger.warning(
+                    "JSON parse failed after %d retries (flow=%s, doc=%s)",
+                    retries, flow, doc_id,
+                    extra={"event": "json_parse_failed", "flow": flow,
+                           "doc_id": doc_id, "session_id": session_id},
+                )
                 raise ValueError(
                     f"LLM returned invalid JSON after {retries} retries.\n"
                     f"Last response:\n{raw[:500]}\n"
                     f"Error: {e}"
                 )
-            # Append the error to the user prompt and retry
             user = user + f"\n\nYour previous response was not valid JSON. Error: {e}\nPlease return ONLY a JSON object."
 
 
@@ -149,30 +200,58 @@ def discover_schema(
         output_schema_json=output_format,
     )
 
-    data = _parse_json_with_retry(DISCOVERY_SYSTEM, user_prompt)
+    sid = manager.session_id
+    logger.info(
+        "Starting schema discovery session=%s domain=%s n_docs=%d",
+        sid, domain, len(documents),
+        extra={"event": "discovery_start", "session_id": sid,
+               "domain": domain, "n_docs": len(documents)},
+    )
+    t0 = time.perf_counter()
+
+    data = _parse_json_with_retry(
+        DISCOVERY_SYSTEM, user_prompt,
+        flow="discovery", session_id=sid,
+    )
 
     # Validate with Pydantic — if the LLM produced an inconsistent schema
     # (e.g. relation referencing a non-existent class), this raises immediately.
     try:
         schema = Schema.model_validate(data)
     except ValidationError as e:
-        # Attempt one repair pass for the schema itself
         errors = [str(err) for err in e.errors()]
-        print(f"[core] Initial schema validation failed: {errors}")
-        # Re-call with repair hint
+        logger.warning(
+            "Initial schema validation failed, attempting repair (session=%s)", sid,
+            extra={"event": "discovery_repair", "session_id": sid, "errors": errors},
+        )
         repair_hint = (
-            f"Your schema had validation errors:\n"
+            "Your schema had validation errors:\n"
             + "\n".join(f"  - {err}" for err in errors)
             + "\nPlease fix and return a valid schema."
         )
         data = _parse_json_with_retry(
             DISCOVERY_SYSTEM,
             user_prompt + "\n\n" + repair_hint,
+            flow="discovery_repair", session_id=sid,
         )
         schema = Schema.model_validate(data)
 
     schema = schema.model_copy(update={"domain": domain, "version": 0})
     manager.set_initial_schema(schema)
+
+    logger.info(
+        "Discovery done session=%s n_classes=%d n_relations=%d duration=%.1fs",
+        sid, len(schema.entity_classes), len(schema.relation_types),
+        time.perf_counter() - t0,
+        extra={
+            "event":       "discovery_done",
+            "session_id":  sid,
+            "domain":      domain,
+            "n_classes":   len(schema.entity_classes),
+            "n_relations": len(schema.relation_types),
+            "duration_s":  round(time.perf_counter() - t0, 2),
+        },
+    )
     return schema
 
 
@@ -202,6 +281,7 @@ def refine_schema(
     Returns:
         (new_schema, proposal) — the updated schema and the edits that were applied.
     """
+    sid = manager.session_id
     output_format = json.dumps(LLMSchemaProposal.model_json_schema(), indent=2)
 
     user_prompt = refinement_user(
@@ -211,24 +291,49 @@ def refine_schema(
         conversation_history=conversation_history,
     )
 
-    data = _parse_json_with_retry(REFINEMENT_SYSTEM, user_prompt)
+    data = _parse_json_with_retry(
+        REFINEMENT_SYSTEM, user_prompt,
+        flow="refinement", session_id=sid,
+    )
 
     try:
         proposal = LLMSchemaProposal.model_validate(data)
     except ValidationError as e:
-        # If the proposal itself is malformed, return an empty proposal
-        # (no changes) rather than crashing the session.
-        print(f"[core] Proposal validation failed: {e}")
+        logger.warning(
+            "Proposal validation failed (session=%s turn=%d): %s", sid, turn_id, e,
+            extra={"event": "refinement_parse_failed", "session_id": sid, "turn_id": turn_id},
+        )
         proposal = LLMSchemaProposal(
             edits=[],
             explanation="I could not parse your request. Could you rephrase it?",
         )
 
+    # Infer whether the user's message accepts, modifies, or rejects the
+    # previous LLM proposal — used to populate UAR (Metric B2).
+    acceptance = _infer_acceptance(user_message)
+
     # Record the user turn first (no schema changes yet)
-    manager.record_user_turn(turn_id=turn_id - 1, message=user_message)
+    manager.record_user_turn(turn_id=turn_id - 1, message=user_message, acceptance=acceptance)
 
     # Apply edits and record the assistant turn
     new_schema = manager.apply_proposal(proposal, turn_id=turn_id)
+
+    logger.info(
+        "Refinement turn=%d session=%s delta=%.1f acceptance=%s n_edits=%d",
+        turn_id, sid,
+        manager.delta_history()[-1] if manager.delta_history() else 0.0,
+        acceptance,
+        len(proposal.edits),
+        extra={
+            "event":       "refinement_turn",
+            "session_id":  sid,
+            "turn_id":     turn_id,
+            "n_edits":     len(proposal.edits),
+            "delta_s":     manager.delta_history()[-1] if manager.delta_history() else 0.0,
+            "acceptance":  acceptance,
+            "converged":   manager.has_converged(),
+        },
+    )
 
     return new_schema, proposal
 
@@ -264,6 +369,9 @@ def extract_document(
             "Schema must be frozen before batch extraction. Call manager.freeze() first."
         )
 
+    started_at = datetime.now(timezone.utc)
+    t0 = time.perf_counter()
+
     output_format = json.dumps(ExtractionResult.model_json_schema(), indent=2)
 
     user_prompt = extraction_user(
@@ -275,7 +383,10 @@ def extract_document(
     )
 
     # ── First attempt ────────────────────────────────────────────────────────
-    data = _parse_json_with_retry(EXTRACTION_SYSTEM, user_prompt)
+    data = _parse_json_with_retry(
+        EXTRACTION_SYSTEM, user_prompt,
+        flow="extract", doc_id=doc_id,
+    )
 
     pre_repair_errors: list[str] = []
     post_repair_errors: list[str] = []
@@ -305,7 +416,10 @@ def extract_document(
             )
 
             try:
-                repaired_data = _parse_json_with_retry(REPAIR_SYSTEM, repair_prompt)
+                repaired_data = _parse_json_with_retry(
+                    REPAIR_SYSTEM, repair_prompt,
+                    flow="giv_repair", doc_id=doc_id,
+                )
                 result = ExtractionResult.model_validate(repaired_data)
                 result = _validate_relation_ids(result)
                 post_repair_errors = []
@@ -316,10 +430,15 @@ def extract_document(
                 current_json = json.dumps(repaired_data if 'repaired_data' in dir() else data)
 
                 if attempt == MAX_REPAIR_ATTEMPTS:
-                    # Give up: return empty result with error log
-                    print(
-                        f"[core] GIV repair failed after {MAX_REPAIR_ATTEMPTS} attempts "
-                        f"for doc {doc_id}. Errors: {post_repair_errors}"
+                    logger.warning(
+                        "GIV repair gave up after %d attempts doc=%s errors=%s",
+                        MAX_REPAIR_ATTEMPTS, doc_id, post_repair_errors,
+                        extra={
+                            "event":            "giv_repair_exhausted",
+                            "doc_id":           doc_id,
+                            "repair_attempts":  MAX_REPAIR_ATTEMPTS,
+                            "final_errors":     post_repair_errors,
+                        },
                     )
                     result = ExtractionResult(
                         doc_id=doc_id,
@@ -330,8 +449,34 @@ def extract_document(
         result.validation_errors_post_repair = post_repair_errors
         result.repair_iterations = repair_iterations
 
+    duration = round(time.perf_counter() - t0, 3)
     result.doc_id = doc_id
     result.schema_version = schema.version
+    result.extraction_started_at = started_at.isoformat()
+    result.extraction_duration_s = duration
+
+    logger.info(
+        "Extracted doc=%s entities=%d relations=%d repairs=%d duration=%.2fs",
+        doc_id,
+        len(result.entities),
+        len(result.relations),
+        repair_iterations,
+        duration,
+        extra={
+            "event":              "doc_extracted",
+            "doc_id":             doc_id,
+            "schema_version":     schema.version,
+            "n_entities":         len(result.entities),
+            "n_relations":        len(result.relations),
+            "n_unmapped":         len(result.unmapped_entities),
+            "repair_iterations":  repair_iterations,
+            "pre_repair_errors":  len(pre_repair_errors),
+            "post_repair_errors": len(post_repair_errors),
+            "schema_drift":       result.schema_modification_proposed,
+            "duration_s":         duration,
+        },
+    )
+
     return result
 
 
@@ -357,6 +502,70 @@ def _validate_relation_ids(result: ExtractionResult) -> ExtractionResult:
     result.relations = valid_relations
     result.validation_errors_post_repair.extend(invalid)
     return result
+
+
+def _infer_acceptance(user_message: str) -> str | None:
+    """
+    Heuristic classifier for UAR (Metric B2).
+
+    Inspects the user's message to label whether they accepted, modified,
+    or rejected the previous LLM proposal.  Returns None when ambiguous.
+
+    Rules (order matters — more specific first):
+      "rejected"  — explicit negation words (no, non va, sbagliato, …)
+      "accepted"  — acknowledgment-only message with no new instructions
+      "modified"  — acknowledgment + additional instructions in same message
+    """
+    msg = user_message.strip().lower()
+
+    # Tokenise first — all matching uses word tokens, not substring matching
+    tokens = set(re.split(r"[\s,;.!?]+", msg)) - {""}
+
+    _REJECT_TOKENS = {
+        "no", "nope", "sbagliato", "wrong", "revert", "undo",
+        "annulla", "ricomincia", "riparti", "restart",
+    }
+    _REJECT_PHRASES = {
+        "non va", "non mi piace", "non va bene",
+        "non è corretto", "not right",
+    }
+    _ACCEPT_TOKENS = {
+        "ok", "sì", "si", "yes", "yep", "yeah", "perfetto", "bene",
+        "ottimo", "esatto", "giusto", "corretto", "great", "perfect",
+        "good", "approved", "accetto", "accept", "confermo", "conferma",
+    }
+    _ACCEPT_PHRASES = {
+        "va bene", "va bene così", "ok così",
+    }
+    _STOPS = {
+        "e", "a", "di", "il", "la", "le", "lo", "un", "una", "the",
+        "and", "to", "of", "per", "in", "da", "del", "della", "dei",
+        "ma", "però", "anche", "con", "but", "and",
+    }
+
+    # Check for explicit rejection (tokens first, then phrases)
+    if tokens & _REJECT_TOKENS:
+        return "rejected"
+    for phrase in _REJECT_PHRASES:
+        if phrase in msg:
+            return "rejected"
+
+    # Check for acceptance
+    accept_hit = bool(tokens & _ACCEPT_TOKENS)
+    if not accept_hit:
+        for phrase in _ACCEPT_PHRASES:
+            if phrase in msg:
+                accept_hit = True
+                break
+
+    if not accept_hit:
+        return None  # Ambiguous: pure instruction, no acceptance signal
+
+    # Acceptance detected — does the message also carry new instructions?
+    content_tokens = tokens - _ACCEPT_TOKENS - _STOPS
+    has_instruction = len(content_tokens) > 2
+
+    return "modified" if has_instruction else "accepted"
 
 
 def _collect_errors(exc: ValidationError | ValueError) -> list[str]:

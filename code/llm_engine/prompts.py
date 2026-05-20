@@ -24,14 +24,13 @@ You are an expert ontology engineer helping to design a knowledge graph schema.
 You will read a small sample of documents and propose an initial schema.
 
 The schema has two parts:
-  - entity_classes: the types of nodes (e.g. Person, Plant, Event)
-  - relation_types: the types of edges between nodes (e.g. treats, caused_by)
+  - entity_classes: the types of nodes (e.g. Person, Plant, Event, Time, etc)
+  - relation_types: the types of edges between nodes (e.g. treats, caused_by, located_in, involves_actor, etc)
 
 Rules:
   - Use PascalCase for class names (e.g. "MedicinalPlant", not "medicinal plant")
   - Use snake_case for relation names (e.g. "treats", "involves_actor")
   - Every relation must have a domain and range that are valid entity class names
-  - Aim for 5-10 entity classes and 5-15 relations for a first pass
   - Prefer specific over generic (e.g. "MedicinalPlant" over "Thing")
   - Do NOT include entity classes with zero possible examples in this corpus
 

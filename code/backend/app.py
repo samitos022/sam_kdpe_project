@@ -39,8 +39,12 @@ _CODE_DIR = Path(__file__).parent.parent
 if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
+from logging_config import setup_logging, get_logger
 from backend.services.neo4j_client import Neo4jClient
 from backend.routes import chat, extraction, graph_api
+
+setup_logging()
+logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────
 #  Global state
@@ -75,12 +79,14 @@ async def lifespan(app: FastAPI):
     try:
         neo4j = Neo4jClient()
         if neo4j.verify_connection():
-            print("[app] Neo4j connected ✓")
+            logger.info("Neo4j connected", extra={"event": "neo4j_connected"})
         else:
-            print("[app] Neo4j connection failed — graph features disabled")
+            logger.warning("Neo4j connection failed — graph features disabled",
+                           extra={"event": "neo4j_unavailable"})
             neo4j = None
     except Exception as e:
-        print(f"[app] Neo4j unavailable: {e} — graph features disabled")
+        logger.warning("Neo4j unavailable: %s — graph features disabled", e,
+                       extra={"event": "neo4j_unavailable", "error": str(e)})
         neo4j = None
 
     yield  # app is running
@@ -88,7 +94,7 @@ async def lifespan(app: FastAPI):
     # Shutdown: close Neo4j
     if neo4j:
         neo4j.close()
-        print("[app] Neo4j disconnected")
+        logger.info("Neo4j disconnected", extra={"event": "neo4j_disconnected"})
 
 
 # ─────────────────────────────────────────────

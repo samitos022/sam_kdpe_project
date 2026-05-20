@@ -231,6 +231,16 @@ class ExtractionResult(BaseModel):
         )
     )
 
+    # ── Timing ───────────────────────────────────────────────────────────────
+    extraction_started_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC timestamp when extraction of this doc started."
+    )
+    extraction_duration_s: float | None = Field(
+        default=None,
+        description="Wall-clock seconds for extracting this document (including GIV loop)."
+    )
+
 
 # ─────────────────────────────────────────────
 #  HITL  —  the conversation types

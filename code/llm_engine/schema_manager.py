@@ -14,14 +14,23 @@ All state is kept in memory during a session.  Call save() to persist.
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+_CODE_DIR = Path(__file__).parent.parent
+if str(_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CODE_DIR))
+
+from logging_config import get_logger
 
 from .parser import (
     EditType, EntityClass, HITLSession, LLMSchemaProposal,
     RelationType, Schema, SchemaEdit, ConversationTurn,
 )
+
+logger = get_logger(__name__)
 
 
 # ─────────────────────────────────────────────
@@ -131,9 +140,36 @@ class SchemaManager:
         self._save_session()
 
         # Check convergence
-        if self.has_converged():
+        converged_now = self.has_converged()
+        if converged_now and not self._session.converged:
             self._session.converged = True
             self._session.convergence_turn = turn_id
+            logger.info(
+                "Schema converged session=%s turn=%d delta_history=%s",
+                self.session_id, turn_id, self._delta_history,
+                extra={
+                    "event":             "schema_converged",
+                    "session_id":        self.session_id,
+                    "convergence_turn":  turn_id,
+                    "delta_history":     self._delta_history,
+                },
+            )
+
+        logger.info(
+            "Schema edit session=%s v%d→v%d delta=%.1f n_edits=%d converged=%s",
+            self.session_id, version_before, new_schema.version,
+            delta, len(proposal.edits), converged_now,
+            extra={
+                "event":          "schema_edit",
+                "session_id":     self.session_id,
+                "version_before": version_before,
+                "version_after":  new_schema.version,
+                "delta_s":        delta,
+                "n_edits":        len(proposal.edits),
+                "edit_types":     [e.edit_type for e in proposal.edits],
+                "converged":      converged_now,
+            },
+        )
 
         return new_schema
 
@@ -175,6 +211,20 @@ class SchemaManager:
         self._session.final_schema_version = frozen.version
         self._save_version(frozen)
         self._save_session()
+        logger.info(
+            "Schema frozen session=%s version=%d n_classes=%d n_relations=%d",
+            self.session_id, frozen.version,
+            len(frozen.entity_classes), len(frozen.relation_types),
+            extra={
+                "event":         "schema_frozen",
+                "session_id":    self.session_id,
+                "version":       frozen.version,
+                "n_classes":     len(frozen.entity_classes),
+                "n_relations":   len(frozen.relation_types),
+                "delta_history": self._delta_history,
+                "converged":     self._session.converged,
+            },
+        )
         return frozen
 
     # ─────────────────────────────────────────
@@ -272,8 +322,11 @@ class SchemaManager:
                 relation_types=list(relations.values()),
             )
         except Exception as e:
-            # Log the error but return the previous schema to avoid data loss
-            print(f"[SchemaManager] Edit produced invalid schema: {e}")
+            logger.error(
+                "Edit produced invalid schema (session=%s): %s",
+                self.session_id, e,
+                extra={"event": "schema_edit_invalid", "session_id": self.session_id, "error": str(e)},
+            )
             return schema
 
     # ─────────────────────────────────────────
