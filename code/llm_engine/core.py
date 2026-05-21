@@ -50,7 +50,6 @@ from .prompts import (
 from .schema_manager import SchemaManager
 
 load_dotenv()
-setup_logging()
 logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────

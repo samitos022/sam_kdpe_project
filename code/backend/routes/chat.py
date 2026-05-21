@@ -3,6 +3,7 @@ routes/chat.py — HITL session management and schema refinement.
 
 Endpoints:
   POST /sessions/create          Create session, run discovery, return schema v0
+  POST /sessions/restore/{id}    Rebuild in-memory session from on-disk schema files
   GET  /sessions/{id}            Get session state and current schema
   POST /sessions/{id}/chat       Send refinement message, get updated schema
   POST /sessions/{id}/freeze     Lock schema for batch extraction
@@ -11,6 +12,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -23,6 +25,7 @@ if str(_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(_CODE_DIR))
 
 from llm_engine.core import discover_schema, refine_schema
+from llm_engine.parser import Schema
 from llm_engine.schema_manager import SchemaManager
 
 # Import session store from app (avoids circular imports by importing lazily)
@@ -124,6 +127,88 @@ async def create_session(req: CreateSessionRequest):
             f"{len(discovery_docs)} documents. "
             f"Review the schema and refine it through chat."
         ),
+    }
+
+
+# ─────────────────────────────────────────────
+#  POST /sessions/restore/{session_id}
+# ─────────────────────────────────────────────
+
+_LOG_DIR = Path("logs/schemas")   # relative to CWD (code/)
+
+@router.post("/restore/{session_id}")
+async def restore_session(session_id: str):
+    """
+    Rebuild an in-memory session from its on-disk schema files.
+
+    Use this after a server restart: sessions are stored in RAM and are
+    lost on restart, but schema files persist on disk.  This endpoint
+    reads them back and re-splits the corpus with the same deterministic
+    seed so the validation set is identical to the original run.
+
+    Requires the schema to be frozen — restoring unfrozen sessions is
+    not supported because intermediate LLM state cannot be reconstructed.
+    """
+    if session_id in _app.sessions:
+        raise HTTPException(status_code=409, detail="Session already active in memory.")
+
+    session_file = _LOG_DIR / f"{session_id}_session.json"
+    if not session_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No on-disk session found for '{session_id}'. "
+                   f"Check logs/schemas/ for available session IDs.",
+        )
+
+    session_data = json.loads(session_file.read_text())
+    domain = session_data.get("domain")
+    final_version = session_data.get("final_schema_version", 0)
+
+    schema_file = _LOG_DIR / f"{session_id}_schema_v{final_version}.json"
+    if not schema_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Schema v{final_version} not found on disk for '{session_id}'.",
+        )
+
+    frozen_schema = Schema.model_validate_json(schema_file.read_text())
+    if not frozen_schema.frozen:
+        raise HTTPException(
+            status_code=409,
+            detail="Schema is not frozen. Freeze the schema before restoring for extraction.",
+        )
+
+    # Rebuild SchemaManager with the frozen schema
+    manager = SchemaManager(domain=domain, log_dir=_LOG_DIR)
+    manager.session_id = session_id          # keep original ID
+    manager._schemas = [frozen_schema]       # only the frozen version matters for extraction
+
+    # Re-split corpus with the same deterministic seed — same validation set as original
+    try:
+        docs = _app.load_documents(domain)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    discovery_docs, validation_docs = _app.split_discovery_validation(docs)
+
+    _app.sessions[session_id] = {
+        "manager":        manager,
+        "domain":         domain,
+        "discovery":      discovery_docs,
+        "validation":     validation_docs,
+        "extract_status": {"status": "not_started", "processed": 0, "total": 0, "errors": []},
+        "chat_history":   [],
+    }
+
+    return {
+        "restored":          True,
+        "session_id":        session_id,
+        "domain":            domain,
+        "schema_version":    frozen_schema.version,
+        "n_classes":         len(frozen_schema.entity_classes),
+        "n_relations":       len(frozen_schema.relation_types),
+        "n_validation_docs": len(validation_docs),
+        "message":           f"Session restored. Run POST /sessions/{session_id}/extract to start extraction.",
     }
 
 

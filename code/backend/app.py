@@ -43,7 +43,6 @@ from logging_config import setup_logging, get_logger
 from backend.services.neo4j_client import Neo4jClient
 from backend.routes import chat, extraction, graph_api
 
-setup_logging()
 logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────
@@ -74,6 +73,12 @@ async def lifespan(app: FastAPI):
     Code before 'yield' runs at startup; after 'yield' at shutdown.
     """
     global neo4j
+
+    # Re-run logging setup here so our handlers are always the last ones
+    # added — uvicorn calls dictConfig before loading the app, which can
+    # wipe module-level handlers added during import.
+    setup_logging()
+    logger.info("Logging initialised", extra={"event": "logging_init"})
 
     # Startup: connect to Neo4j
     try:

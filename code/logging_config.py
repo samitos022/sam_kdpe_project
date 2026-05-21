@@ -92,20 +92,37 @@ class _JsonlHandler(logging.Handler):
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+def _has_our_handlers() -> bool:
+    """Return True if our file handler is already on the root logger."""
+    root = logging.getLogger()
+    return any(
+        isinstance(h, logging.handlers.RotatingFileHandler)
+        and getattr(h, "baseFilename", None) == str(_LOG_FILE.resolve())
+        for h in root.handlers
+    )
+
+
 def setup_logging(level: int = logging.DEBUG) -> None:
     """
     Configure root logger with three handlers.
-    Safe to call multiple times — subsequent calls are no-ops.
+
+    Uses handler-presence detection instead of a flag so that if uvicorn
+    (or any library) calls dictConfig and wipes our handlers between import
+    time and the first request, calling setup_logging() again re-adds them.
     """
-    global _setup_done
-    if _setup_done:
+    if _has_our_handlers():
         return
-    _setup_done = True
 
     _LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     root = logging.getLogger()
     root.setLevel(level)
+
+    # Remove any stale instances of our handlers to avoid duplicates
+    root.handlers = [
+        h for h in root.handlers
+        if not isinstance(h, (logging.handlers.RotatingFileHandler, _JsonlHandler))
+    ]
 
     formatter = logging.Formatter(_FMT_TEXT, datefmt=_DATE_FMT)
 
@@ -120,8 +137,8 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
-    # 2. Stdout handler — INFO and above
-    stream_handler = logging.StreamHandler(sys.stdout)
+    # 2. Stderr handler — INFO and above (stderr survives uvicorn stdout capture)
+    stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(formatter)
     root.addHandler(stream_handler)
