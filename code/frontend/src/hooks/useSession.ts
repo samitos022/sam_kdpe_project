@@ -7,6 +7,7 @@ interface SessionState {
   schema: Schema | null;
   turns: ChatTurn[];
   deltaHistory: number[];
+  nValidationDocs: number;
   loading: boolean;
   error: string | null;
 }
@@ -17,6 +18,7 @@ export function useSession() {
     schema: null,
     turns: [],
     deltaHistory: [],
+    nValidationDocs: 0,
     loading: false,
     error: null,
   });
@@ -37,6 +39,7 @@ export function useSession() {
         ...s,
         loading: false,
         schema: res.schema,
+        nValidationDocs: res.n_validation_docs,
         turns: [
           {
             role: "assistant",

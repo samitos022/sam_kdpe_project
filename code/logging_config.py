@@ -127,15 +127,19 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     formatter = logging.Formatter(_FMT_TEXT, datefmt=_DATE_FMT)
 
     # 1. Rotating file handler — keeps last 5 × 10 MB
-    file_handler = logging.handlers.RotatingFileHandler(
-        _LOG_FILE,
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    # Falls back silently when the log file is not writable (e.g. root-owned from Docker).
+    try:
+        file_handler = logging.handlers.RotatingFileHandler(
+            _LOG_FILE,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except PermissionError:
+        pass
 
     # 2. Stderr handler — INFO and above (stderr survives uvicorn stdout capture)
     stream_handler = logging.StreamHandler(sys.stderr)

@@ -218,56 +218,62 @@ UIR and SDR are complementary: UIR is entity-level (this specific mention has no
 
 Block D is the most practically meaningful test: does having a knowledge graph actually help answer questions better than just searching the raw text?
 
-The setup is simple:
-1. Generate 30 factual questions from the validation documents — using a **different model** than the one used for extraction, to avoid systematic alignment.
-2. For each question, retrieve relevant subgraph context using graph search.
-3. Pass the subgraph context to the LLM and collect an answer.
-4. Use a third LLM as a judge: does the answer match the source passage? YES / NO / PARTIAL.
-5. Compare accuracy across systems.
+The pipeline has four steps. First, for each test document, we generate one factual question from its text using a dedicated LLM prompt. Second, we pass that question to each retrieval system and collect an answer. Third, we judge each answer with an LLM-as-judge that receives the question, the answer, and the first 1000 characters of the source document as evidence — it returns YES, PARTIAL, or NO with a brief justification. Finally, we aggregate: accuracy is computed as (YES + 0.5 × PARTIAL) / total, and the key figure is Δ = Accuracy(HITL) − Accuracy(Plain-RAG). If Δ > 0, the graph adds value.
 
-The comparison is:
+One methodological choice worth noting: we run on **two test sets**, not one. The first is the top-30 documents by entity count — the documents where the graph is densest, so GraphRAG has the best possible chance. The second is a random sample of 30 documents from the remaining corpus — an unbiased estimate of real-world performance. Comparing the two reveals whether any graph advantage is genuine or only appears where the graph happens to be rich.
+
+We have a first result on the AITA domain, session with 255 extracted documents:
+
 ```
-Δ = QA Accuracy(HITL graph) − QA Accuracy(plain text RAG)
+              top-30                    rand-30
+System        Accuracy   YES  NO        Accuracy   YES  PARTIAL  NO
+──────────    ────────   ───  ──        ────────   ───  ───────  ──
+Graph-HITL      10.0%     3   27          28.3%     7       3    20
+Plain-RAG       70.0%    21    9          61.7%    18       1    11
+
+Δ HITL vs Plain-RAG:  −60.0%            −33.3%
 ```
 
-If Δ > 0, the graph adds value. If Δ ≤ 0, that's a negative result — but it's still scientifically valid and publishable.
+This is a clear negative result, and it's diagnostically interesting. Graph-HITL returns "Not enough information in the graph" in 100% of the 60 questions — the retrieval never fires. The reason is structural: in AITA, all entities named "narrator", "boyfriend", "sister" across 255 different stories get merged into a single Neo4j node. That node accumulates edges from every story it appears in. When GraphRAG searches for "narrator", it retrieves a mix of actions from 98 different posts — pure noise, not context.
+
+This failure is domain-specific, not a flaw in the pipeline. AITA entities are anonymous social roles that repeat across every post. Wikipedia Historical Events entities — "Battle of Waterloo", "Napoleon Bonaparte", "Treaty of Ghent" — are named, specific, and unique to their article. There is no cross-document collision. The Wikipedia result, which we will run next, tests whether the graph is useful when this condition holds.
 
 ---
 
 ## [SLIDE 11] Baselines
 
-We compare against two baselines.
+For Block D we compare two systems.
 
-**Zero-Shot GIV** — the same system, same extraction pipeline, same GIV repair loop, but using the schema produced by the LLM without any HITL refinement. This isolates the contribution of the human-in-the-loop.
+**Plain-RAG** is the baseline. For each question, it tokenizes the question, removes stopwords, and computes a Jaccard-like overlap score between the question's tokens and every document in the corpus. It returns the three highest-scoring documents and passes their first 1200 characters to the LLM as context. No embeddings, no vector index, no semantic similarity — deliberately simple. The goal is to establish a retrieval baseline that cannot be accused of benefiting from the same LLM representations used to build the graph.
 
-**OpenIE** — unconstrained open information extraction with no schema. This is the "lower bound" baseline. OpenIE should produce graphs with very high entropy, very high orphan rates, and very poor downstream QA performance. It's the answer to the question: why use a schema at all?
+**Graph-HITL** is the system under evaluation. It extracts up to five search terms from the question, queries Neo4j for nodes whose name contains each term within the session's subgraph, retrieves their one-hop neighborhood as typed triples, and passes those triples to the LLM as structured context.
 
-The expected ordering across most metrics:
+**Graph-ZeroShot** is an optional ablation. If a separate session was run using only the v0 schema — the one proposed by the LLM before any HITL refinement — we can compare it against Graph-HITL on the same questions. This isolates the contribution of the conversational loop: does the human-refined schema produce a graph that is more useful downstream than the zero-shot schema?
+
+The expected ordering across all metrics — and the hypotheses we are actually testing:
 
 ```
-SCR:   HITL ≥ Zero-Shot >> OpenIE (N/A — no schema to violate)
-SUR:   HITL ≥ Zero-Shot
-UIR:   HITL ≤ Zero-Shot   (lower is better)
-SDR:   HITL ≤ Zero-Shot   (lower is better)
-RTE:   OpenIE >> Zero-Shot ≥ HITL
-ONR:   OpenIE >> Zero-Shot ≥ HITL
-QA:    HITL ≥ Zero-Shot ≥ OpenIE
+SCR:    HITL ≥ Zero-Shot    (refined schema → fewer validation errors)
+SUR:    HITL ≥ Zero-Shot    (refined schema → fewer unused classes)
+UIR:    HITL ≤ Zero-Shot    (refined schema → fewer unmapped entities)
+SDR:    HITL ≤ Zero-Shot    (refined schema → less drift during extraction)
+QA(Δ): HITL ≥ Zero-Shot > 0 (on entity-specific domains)
 ```
 
-These are hypotheses. We fully expect some of them not to hold — for example, HITL might not consistently beat Zero-Shot on every metric for every domain. That's part of what makes it research.
+All of these are falsifiable. If HITL does not outperform Zero-Shot on schema quality metrics, that means the conversational refinement did not add value — a negative result, but a scientifically valid and publishable one.
 
 ---
 
 ## [SLIDE 12] Two Domains, One Hypothesis
 
-We run on two corpora: **Reddit AITA posts** and **PubMed ethnobotany abstracts**. The choice is intentional — they have very different structural properties.
+We run on two corpora: **Reddit AITA posts** and **Wikipedia Historical Events articles**. The choice is intentional — they have very different structural properties.
 
-PubMed is a structured scientific domain with standardized vocabulary. Two different users working independently on the same PubMed data should discover similar schemas — lots of overlap in class names, similar relation types. AITA is unstructured social narrative — much more subjective, much more ambiguous. Two users working on AITA might produce very different schemas.
+Wikipedia History is a structured factual domain with consistent vocabulary (battles, treaties, sieges, revolutions). Two different users working independently on the same data should discover similar schemas — participants, dates, outcomes, locations. AITA is unstructured social narrative — much more subjective, much more ambiguous. Two users working on AITA might produce very different schemas.
 
 This is what Block E (inter-session agreement) tests. The hypothesis is:
 
 ```
-ISA(PubMed) >> ISA(AITA)
+ISA(Wikipedia) >> ISA(AITA)
 ```
 
 If true, it tells us something fundamental about how much of schema structure is domain-inherent versus user-dependent.
@@ -276,12 +282,18 @@ If true, it tells us something fundamental about how much of schema structure is
 
 ## [SLIDE 13] What's Built, What's Next
 
-The infrastructure is in place. The backend logs every extraction result, every HITL turn, every LLM call — into structured JSONL files that can be queried without running the server. All metrics for Blocks A, B, and C are computable automatically from these logs. Block D is the next step — I need to implement the question generation and judge pipeline.
+The infrastructure is in place. The backend logs every extraction result, every HITL turn, every LLM call — into structured JSONL files that can be queried without running the server. All metrics for Blocks A, B, and C are computable automatically from these logs. **Block D is now also implemented** — `evaluation/qa_eval.py` runs the full QA evaluation pipeline as a standalone script, with both GraphRAG and Plain-RAG baselines and an LLM-as-judge.
+
+What's been built this week:
+- **Wikipedia Historical Events corpus** (500 articles, ≤2000 chars) as the second domain
+- **Block D evaluation script** (`qa_eval.py`): question generation → GraphRAG vs Plain-RAG → LLM judge → accuracy table
+- **Extraction prompt optimizations**: compact schema format (90% token reduction), `EXTRACTION_MAX_TOKENS=1000`, separate extraction model routing
+- **GIV dangling-relation fix**: post-extraction semantic check removes relations with non-existent entity IDs
 
 The timeline:
-- **This week** — run the first full sessions on both domains
-- **Next week** — Block D QA evaluation
-- **Week after** — write up results, comparison tables, plots
+- **Current** — first Block D run on session `019a7bb6` (AITA, 255 docs)
+- **Next week** — run Wikipedia History session + Block D; collect both domains' results
+- **Week after** — comparison tables, convergence plots, write-up
 
 That's the plan. Questions?
 

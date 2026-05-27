@@ -29,32 +29,39 @@ Edit `code/.env` and set your keys:
 
 ```env
 # LLM — pick one provider
-LITELLM_MODEL=openai/gpt-4o
-OPENAI_API_KEY=sk-...
+LITELLM_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Extraction model (optional — defaults to LITELLM_MODEL)
+LITELLM_EXTRACTION_MODEL=openrouter/meta-llama/llama-3.1-8b-instruct
 
 # Neo4j (leave as-is for Docker)
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 
-# PubMed (only needed for the pubmed_ethnobotany domain)
-ENTREZ_EMAIL=you@example.com
-
 # Frontend
 VITE_API_URL=http://localhost:8000
 ```
 
-### 3. Add your data
+### 3. Download and prepare data
 
-Place processed JSONL files in `code/data/processed/`:
+```bash
+cd code
+# Reddit AITA posts (≤2000 chars combined title+text, ~500 posts)
+../.venv/bin/python3 data/download_aita.py
+
+# Wikipedia historical events (≤2000 chars combined title+summary, ~500 articles)
+../.venv/bin/python3 data/download_wikipedia_history.py
+```
+
+Both scripts write to `code/data/processed/`:
 
 ```
 code/data/processed/
-├── aita.jsonl
-└── pubmed_ethnobotany.jsonl
+├── aita.jsonl               # fields: title, text
+└── wikipedia_history.jsonl  # fields: title, summary
 ```
-
-Each line must be a JSON object. The backend reads `title` + `body` for AITA and `title` + `abstract` for PubMed.
 
 ### 4. Start everything
 
@@ -77,7 +84,7 @@ First build takes ~2–3 minutes (downloading images + installing dependencies).
 ### 5. Use the app
 
 1. Open **http://localhost:5173**
-2. Select a domain (`aita` or `pubmed_ethnobotany`) and create a session
+2. Select a domain (`aita` or `wikipedia_history`) and create a session
 3. Chat with the assistant to refine the schema
 4. When satisfied, click **Freeze** to lock the schema
 5. Start **Batch Extraction** — the backend processes all validation documents in the background
@@ -126,13 +133,16 @@ docker compose up -d neo4j
 ```
 sam_kdpe_project/
 ├── code/
-│   ├── backend/        FastAPI routes and Neo4j client
-│   ├── frontend/       React + Vite UI
-│   ├── llm_engine/     Schema discovery, HITL refinement, ABox extraction
-│   ├── data/           Processed JSONL corpora (gitignored)
-│   └── logs/           Per-session schema version logs (gitignored)
+│   ├── backend/          FastAPI routes and Neo4j client
+│   ├── frontend/         React + Vite UI
+│   ├── llm_engine/       Schema discovery, HITL refinement, extraction, GraphRAG, Plain-RAG
+│   ├── evaluation/       Block D QA evaluation script (qa_eval.py)
+│   ├── data/             Download scripts + processed JSONL corpora (gitignored)
+│   └── logs/             Per-session schema logs and extraction results (gitignored)
 └── docs/
-    ├── api_specs.md    Full REST API reference
-    ├── architecture.md System design and component diagram
-    └── evaluation.md   Evaluation plan and metrics
+    ├── api_specs.md        Full REST API reference
+    ├── architecture.md     System design and component diagram
+    ├── evaluation.md       Evaluation framework (presentation script)
+    ├── evaluation_plan.md  Step-by-step metric computation guide
+    └── block_d_qa_eval.md  Block D QA evaluation — how to run and interpret
 ```

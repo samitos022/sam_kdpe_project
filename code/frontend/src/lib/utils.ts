@@ -16,7 +16,7 @@ export function formatDelta(value: number): string {
 
 export const DOMAIN_LABELS: Record<string, string> = {
   aita: "AITA (Reddit)",
-  pubmed_ethnobotany: "PubMed Ethnobotany",
+  wikipedia_history: "Wikipedia Historical Events",
 };
 
 // Consistent color per entity class name (deterministic hash)

@@ -142,14 +142,14 @@ app.include_router(graph_api.router,  prefix="/graph",     tags=["Graph"])
 _DATA_DIR = _CODE_DIR / "data" / "processed"
 
 DOMAIN_FILES: dict[str, Path] = {
-    "aita":                _DATA_DIR / "aita.jsonl",
-    "pubmed_ethnobotany":  _DATA_DIR / "pubmed_ethnobotany.jsonl",
+    "aita":               _DATA_DIR / "aita.jsonl",
+    "wikipedia_history":  _DATA_DIR / "wikipedia_history.jsonl",
 }
 
 # Field names per domain (how to extract text from each JSONL record)
 DOMAIN_TEXT_FIELDS: dict[str, list[str]] = {
-    "aita":               ["title", "body"],
-    "pubmed_ethnobotany": ["title", "abstract"],
+    "aita":               ["title", "text"],
+    "wikipedia_history":  ["title", "summary"],
 }
 
 

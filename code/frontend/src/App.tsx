@@ -89,6 +89,7 @@ export default function App() {
           schema={session.schema}
           extractionStatus={extraction.status}
           extractionError={extraction.error}
+          nValidationDocs={session.nValidationDocs}
           onStartExtraction={extraction.startExtraction}
         />
       )}

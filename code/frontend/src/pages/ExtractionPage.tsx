@@ -10,13 +10,15 @@ interface ExtractionPageProps {
   schema: Schema | null;
   extractionStatus: import("../types").ExtractionStatus;
   extractionError: string | null;
-  onStartExtraction: () => void;
+  nValidationDocs: number;
+  onStartExtraction: (maxDocs?: number) => void;
 }
 
 export function ExtractionPage({
   schema,
   extractionStatus,
   extractionError,
+  nValidationDocs,
   onStartExtraction,
 }: ExtractionPageProps) {
   return (
@@ -44,6 +46,7 @@ export function ExtractionPage({
       <ExtractionPanel
         status={extractionStatus}
         error={extractionError}
+        nValidationDocs={nValidationDocs}
         onStart={onStartExtraction}
       />
 

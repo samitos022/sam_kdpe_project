@@ -57,10 +57,12 @@ logger = get_logger(__name__)
 # ─────────────────────────────────────────────
 
 MODEL = os.getenv("LITELLM_MODEL", "claude-sonnet-4-20250514")
+EXTRACTION_MODEL = os.getenv("LITELLM_EXTRACTION_MODEL", MODEL)
 MAX_REPAIR_ATTEMPTS = 3       # GIV repair iterations before giving up
 JSON_PARSE_RETRIES = 2        # Retries on pure JSON parse failure (not Pydantic)
 TEMPERATURE = 0.2             # Low temperature for consistent structured output
 MAX_TOKENS = 4096
+EXTRACTION_MAX_TOKENS = 1500  # Compact JSON; 1000 was too low for entity-rich domains (Wikipedia)
 
 
 # ─────────────────────────────────────────────
@@ -74,6 +76,8 @@ def _call_llm(
     flow: str = "unknown",
     session_id: str | None = None,
     doc_id: str | None = None,
+    model: str = MODEL,
+    max_tokens: int = MAX_TOKENS,
 ) -> str:
     """
     Single LLM call via LiteLLM. Returns the raw response text.
@@ -89,13 +93,13 @@ def _call_llm(
     """
     t0 = time.perf_counter()
     response = litellm.completion(
-        model=MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
         ],
         temperature=TEMPERATURE,
-        max_tokens=MAX_TOKENS,
+        max_tokens=max_tokens,
     )
     latency = round(time.perf_counter() - t0, 3)
 
@@ -105,11 +109,11 @@ def _call_llm(
 
     logger.info(
         "llm_call flow=%s latency=%.2fs model=%s",
-        flow, latency, MODEL,
+        flow, latency, model,
         extra={
             "event":             "llm_call",
             "flow":              flow,
-            "model":             MODEL,
+            "model":             model,
             "latency_s":         latency,
             "prompt_tokens":     prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -143,13 +147,15 @@ def _parse_json_with_retry(
     flow: str = "unknown",
     session_id: str | None = None,
     doc_id: str | None = None,
+    model: str = MODEL,
+    max_tokens: int = MAX_TOKENS,
 ) -> dict:
     """
     Call LLM and parse JSON. Retries if JSON is malformed (not if Pydantic fails).
     Pydantic failures are handled by the GIV repair loop, not here.
     """
     for attempt in range(retries + 1):
-        raw = _call_llm(system, user, flow=flow, session_id=session_id, doc_id=doc_id)
+        raw = _call_llm(system, user, flow=flow, session_id=session_id, doc_id=doc_id, model=model, max_tokens=max_tokens)
         try:
             return json.loads(_extract_json(raw))
         except json.JSONDecodeError as e:
@@ -384,7 +390,8 @@ def extract_document(
     # ── First attempt ────────────────────────────────────────────────────────
     data = _parse_json_with_retry(
         EXTRACTION_SYSTEM, user_prompt,
-        flow="extract", doc_id=doc_id,
+        flow="extract", doc_id=doc_id, model=EXTRACTION_MODEL,
+        max_tokens=EXTRACTION_MAX_TOKENS,
     )
 
     pre_repair_errors: list[str] = []
@@ -417,7 +424,8 @@ def extract_document(
             try:
                 repaired_data = _parse_json_with_retry(
                     REPAIR_SYSTEM, repair_prompt,
-                    flow="giv_repair", doc_id=doc_id,
+                    flow="giv_repair", doc_id=doc_id, model=EXTRACTION_MODEL,
+                    max_tokens=EXTRACTION_MAX_TOKENS,
                 )
                 result = ExtractionResult.model_validate(repaired_data)
                 result = _validate_relation_ids(result)

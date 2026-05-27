@@ -16,7 +16,7 @@ Returns overall application status.
   "status": "ok",
   "neo4j": true,
   "sessions": 2,
-  "domains": ["aita", "pubmed_ethnobotany"]
+  "domains": ["aita", "wikipedia_history"]
 }
 ```
 
@@ -44,7 +44,7 @@ Create a new HITL session. Loads documents, runs zero-shot schema discovery on t
   "log_dir": "logs/schemas"
 }
 ```
-`domain` must be `"aita"` or `"pubmed_ethnobotany"`.
+`domain` must be `"aita"` or `"wikipedia_history"`.
 
 **Response**
 ```json
@@ -155,6 +155,10 @@ Full schema evolution log. Used for plotting the ΔS_t convergence curve.
 ### `POST /sessions/{session_id}/extract`
 Start background extraction on the validation corpus (90% of documents). Schema must be frozen first. Returns immediately — poll `/extract/status` for progress.
 
+| Query param | Type | Default | Description |
+|---|---|---|---|
+| `max_docs` | int | — | Cap the number of documents to extract (useful for quick tests) |
+
 **Response**
 ```json
 {
@@ -162,6 +166,7 @@ Start background extraction on the validation corpus (90% of documents). Schema 
   "session_id": "a1b2c3d4",
   "total_documents": 450,
   "schema_version": 4,
+  "capped": false,
   "poll_url": "/sessions/a1b2c3d4/extract/status"
 }
 ```

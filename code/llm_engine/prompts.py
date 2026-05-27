@@ -150,56 +150,73 @@ Return a JSON object with this exact structure:
 
 EXTRACTION_SYSTEM = """\
 You are a knowledge graph extraction engine.
-You will extract entities and relations from a document using a provided schema.
+Extract entities and relations from a document using the provided schema.
 
 Rules:
-  - Extract ONLY entity classes and relation types defined in the schema
-  - If you encounter something that doesn't fit the schema, add it to 'unmapped_entities'
-  - Do NOT invent new classes or relations
-  - Entity IDs must follow the format: '{class_name_lowercase}_{slug}'
-    e.g. 'plant_chamomile', 'symptom_insomnia'
-  - Slugs are lowercase, underscores only, no special characters
-  - A relation can only exist if both its subject and object are in the 'entities' list
-  - Assign confidence scores honestly: 1.0 = certain, 0.5 = plausible, 0.0 = a guess
-  - If the document is about something completely outside the schema, return empty lists
-
-If you believe the schema needs a new class or relation to represent content in this
-document properly, set 'schema_modification_proposed' to true and explain in
-'unmapped_entities' what you would have added. Do NOT add it yourself.
+  - Extract ONLY classes and relations defined in the schema
+  - Entity IDs: '{class_lowercase}_{slug}'  e.g. 'person_narrator', 'emotion_anger'
+  - Slugs: lowercase, underscores only
+  - CRITICAL: every entity_id used in a relation MUST exist in the entities list.
+    If you want to express "narrator feels anger", you MUST add the Emotion entity first,
+    then add the relation. A relation without its entity is invalid and will be removed.
+  - source_doc_id in every entity and relation must equal the document's doc_id
+  - Add unrepresentable content to 'unmapped_entities' (do NOT invent new classes)
+  - Confidence: 1.0 certain, 0.5 plausible, 0.0 guess
 
 Respond ONLY with a valid JSON object. No text outside the JSON.
 """
+
+
+def _compact_schema(schema_json: str) -> str:
+    """Convert full Schema JSON to a compact text representation (~4x fewer tokens)."""
+    import json
+    s = json.loads(schema_json)
+    classes = ", ".join(c["name"] for c in s["entity_classes"])
+    rels = "\n".join(
+        f"  {r['name']}: {r['domain']} → {r['range']}"
+        for r in s["relation_types"]
+    )
+    return f"Entity classes: {classes}\n\nRelations (predicate: domain → range):\n{rels}"
+
 
 def extraction_user(
     document: str,
     doc_id: str,
     schema_json: str,
     schema_version: int,
-    output_schema_json: str,
+    output_schema_json: str,  # kept for API compatibility, no longer injected
 ) -> str:
     """
     Generates the user prompt for extracting ABox from one document.
 
-    Args:
-        document:           Full text of the document to extract from.
-        doc_id:             Identifier for this document.
-        schema_json:        JSON of the frozen Schema (TBox).
-        schema_version:     Version number of the frozen schema.
-        output_schema_json: JSON schema of ExtractionResult.
+    The full Pydantic JSON schema (output_schema_json) is intentionally NOT
+    injected — it adds ~1350 tokens with no quality benefit. A compact example
+    is used instead.
     """
+    compact = _compact_schema(schema_json)
     return f"""\
 Document ID: {doc_id}
 Schema version: {schema_version}
 
-Schema to use for extraction:
-{schema_json}
+Schema:
+{compact}
 
-Document to extract from:
-{document[:3000]}
+Document:
+{document}
 
-Extract all entities and relations. Return a JSON object with this structure:
-
-{output_schema_json}
+Extract all entities and relations. Return this JSON (copy doc_id and schema_version exactly):
+{{
+  "doc_id": "{doc_id}",
+  "schema_version": {schema_version},
+  "entities": [
+    {{"id": "person_narrator", "class_name": "Person", "name": "narrator", "source_doc_id": "{doc_id}", "confidence": 1.0}}
+  ],
+  "relations": [
+    {{"subject_id": "person_narrator", "predicate": "performs_action", "object_id": "action_refusing", "source_doc_id": "{doc_id}", "confidence": 0.9}}
+  ],
+  "unmapped_entities": [],
+  "schema_modification_proposed": false
+}}
 """
 
 

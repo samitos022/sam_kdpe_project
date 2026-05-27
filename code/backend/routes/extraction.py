@@ -24,7 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 _CODE_DIR = Path(__file__).parent.parent.parent
 if str(_CODE_DIR) not in sys.path:
@@ -52,6 +52,7 @@ router = APIRouter()
 async def start_extraction(
     session_id: str,
     background_tasks: BackgroundTasks,
+    max_docs: int | None = Query(default=None, ge=1, description="Cap number of validation docs to process (default: all)"),
 ):
     """
     Start batch extraction on the validation corpus (90% of documents).
@@ -88,6 +89,9 @@ async def start_extraction(
             detail="No validation documents available for this session.",
         )
 
+    if max_docs is not None:
+        validation_docs = validation_docs[:max_docs]
+
     # Reset status
     session["extract_status"] = {
         "status":    "running",
@@ -118,6 +122,7 @@ async def start_extraction(
         "message":          "Extraction started in background.",
         "session_id":       session_id,
         "total_documents":  len(validation_docs),
+        "capped":           max_docs is not None,
         "schema_version":   manager.version,
         "poll_url":         f"/sessions/{session_id}/extract/status",
     }

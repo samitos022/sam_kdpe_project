@@ -41,14 +41,14 @@ curl http://localhost:8000/health
 ### 0.2 Prepara i dati
 
 Posiziona i file JSONL in `code/data/processed/`:
-- `aita.jsonl` — ogni riga è un post Reddit con campi `title`, `body`
-- `pubmed_ethnobotany.jsonl` — ogni riga è un abstract con `title`, `abstract`
+- `aita.jsonl` — ogni riga è un post Reddit con campi `title`, `text`
+- `wikipedia_history.jsonl` — ogni riga è un articolo Wikipedia con campi `title`, `summary`
 
 Verifica che il backend li legga:
 
 ```bash
 curl http://localhost:8000/
-# "domains": ["aita", "pubmed_ethnobotany"] deve essere nella risposta
+# "domains": ["aita", "wikipedia_history"] deve essere nella risposta
 ```
 
 ### 0.3 Crea una sessione di test
@@ -482,66 +482,50 @@ Confronta `sur` e `relation_sur` con quelli calcolati dai log in Phase 2. Devono
 
 > **Obiettivo:** misurare se il grafo HITL risponde meglio a domande fattuali rispetto ai baseline.
 
-### Passo 1 — Genera le domande
+Block D è implementato come script standalone in `evaluation/qa_eval.py`. Vedi `docs/block_d_qa_eval.md` per la documentazione completa.
 
-Per ogni dataset, genera 30 domande dai documenti sorgente:
-
-```bash
-cd code && python3 -c "
-import sys
-sys.path.insert(0, '.')
-from llm_engine.core import generate_qa_questions
-import json
-
-# Leggi alcuni documenti dal validation set
-docs = open('data/processed/aita.jsonl').readlines()[:10]
-all_questions = []
-for line in docs:
-    doc = json.loads(line)
-    text = doc.get('title','') + '\n' + doc.get('body','')
-    qs = generate_qa_questions(text, n=3)
-    all_questions.extend(qs)
-
-print('\n'.join(all_questions[:30]))
-"
-```
-
-> Usa un modello diverso da quello usato per l'estrazione per evitare alignment sistematico (es. se hai estratto con GPT-4o, genera le domande con Claude, e viceversa).
-
-### Passo 2 — Rispondi con GraphRAG
-
-Per ogni domanda, esegui una ricerca nel grafo:
+### Comando base
 
 ```bash
-curl "http://localhost:8000/graph/search?session_id=a1b2c3d4&q=chamomile"
+cd /home/sam/Documents/uni/kdpe/sam_kdpe_project/code
+
+../.venv/bin/python3 evaluation/qa_eval.py \
+    --session  <hitl_session_id> \
+    --domain   aita
 ```
 
-Poi costruisci la risposta concatenando i nodi/archi trovati e passandoli all'LLM come contesto.
+### Con baseline Zero-Shot (ablation)
 
-### Passo 3 — Giudica le risposte
-
-Usa `judge_qa_answer()` da `llm_engine/core.py`:
-
-```python
-from llm_engine.core import judge_qa_answer
-
-verdict = judge_qa_answer(
-    question="What plant is used to treat fever?",
-    answer="Chamomile is used to treat fever.",
-    source_passage="...chamomile has been traditionally used to reduce fever..."
-)
-# {"verdict": "YES", "reason": "Answer matches source passage."}
+```bash
+../.venv/bin/python3 evaluation/qa_eval.py \
+    --session          <hitl_session_id> \
+    --domain           aita \
+    --zeroshot-session <zeroshot_session_id>
 ```
 
-### Passo 4 — Aggrega i risultati
+### Output
+
+Lo script scrive in `logs/eval/<session_id>/`:
+
+| File | Contenuto |
+|---|---|
+| `qa_results.jsonl` | Una riga per ogni (doc, domanda, sistema): domanda, risposte, verdetti |
+| `qa_summary.json` | Metriche aggregate: accuracy, YES/PARTIAL/NO, Δ HITL vs Plain-RAG |
+
+### Interpretazione
 
 ```
-Accuratezza = % di YES sui 30 giudizi per sistema
-Delta = QA(HITL) - QA(Plain-RAG)
+Δ = Accuracy(Graph-HITL) − Accuracy(Plain-RAG)
 
-Se Delta > 0 → il grafo aggiunge valore rispetto al RAG su testo grezzo
-Se Delta ≤ 0 → il grafo non aiuta (risultato negativo valido)
+Δ > 0  → il grafo aggiunge valore rispetto al testo grezzo (risultato positivo)
+Δ ≤ 0  → il grafo non aiuta (risultato negativo, ma scientificamente valido)
 ```
+
+### Prerequisiti
+
+1. Neo4j attivo con i nodi della sessione caricati (`curl http://localhost:8000/health`)
+2. `logs/eval/<session_id>/extraction_results.jsonl` deve esistere
+3. `data/processed/<domain>.jsonl` deve essere presente
 
 ---
 
@@ -570,9 +554,9 @@ Per le classi (nomi semantici, non identici), usa BERTScore o embeddings per sim
 
 **Confronto atteso:**
 ```
-ISA(PubMed) > ISA(AITA)
+ISA(Wikipedia) > ISA(AITA)
 ```
-PubMed ha vocabolario scientifico standardizzato → diversi utenti convergeranno su schemi simili.
+Wikipedia History ha vocabolario storico/fattuale standardizzato → diversi utenti convergeranno su schemi simili.
 AITA è dominio ambiguo → schemi molto diversi tra utenti diversi.
 
 ---
@@ -589,7 +573,7 @@ AITA è dominio ambiguo → schemi molto diversi tra utenti diversi.
 | A1 — SUR | 2+3 | log + Neo4j | `GET /sessions/{id}/eval` + `/graph/schema_utilization` | ✅ |
 | A2 — RTE | 3 | Neo4j | `GET /graph/stats` | ✅ |
 | A4 — ONR | 3 | Neo4j | `GET /graph/stats` | ✅ |
-| D1 — QA | 4 | LLM judge | script manuale | ⬜ |
+| D1 — QA | 4 | LLM judge | `evaluation/qa_eval.py` | ✅ |
 ---
 
 ## Osservare le Metriche dai Log
@@ -609,7 +593,8 @@ code/logs/
 └── eval/{sid}/
     ├── extraction_results.jsonl     ← un ExtractionResult per documento (A3, C1, C2)
     ├── session_summary.json         ← metriche aggregate (A1, A3, C1, C2)
-    └── extraction_errors.jsonl      ← errori di estrazione persistiti su disco
+    ├── qa_results.jsonl             ← Block D: una riga per (doc, domanda, sistema)
+    └── qa_summary.json              ← Block D: accuracy aggregata + Δ HITL vs Plain-RAG
 ```
 
 ---

@@ -25,7 +25,7 @@ The evaluation answers three research questions:
 | Dataset | Domain | Size | Ontology ambiguity |
 |---|---|---|---|
 | AITA (Reddit) | Social / moral reasoning | 500 posts | Very high — no canonical schema |
-| PubMed Ethnobotany | Scientific / biomedical | 400–500 abstracts | Medium — domain vocabulary exists, structure does not |
+| Wikipedia Historical Events | Historical / encyclopedic | 500 articles | Medium — facts are structured, ontology is open |
 
 Using two domains with different ambiguity levels tests whether the system's behavior is domain-agnostic.
 
@@ -119,7 +119,7 @@ where $C_{\text{added}}, C_{\text{deleted}}, C_{\text{merged}}, C_{\text{renamed
 
 **What to plot.** Plot $\Delta S_t$ as a function of turn $t$ for each session. The hypothesis is a monotonically decreasing curve converging toward zero — evidence that the conversation is doing real work and not oscillating randomly. An oscillating curve is itself a finding: it means the user and the LLM are not converging, which is a negative result worth reporting.
 
-**Convergence point $T^*$.** Define $T^* = \min\{t : \Delta S_t < \varepsilon \text{ for 3 consecutive turns}\}$ where $\varepsilon$ is the minimum meaningful schema change (e.g., $\varepsilon = 1.0$ in the weighted scale above). Report $T^*$ per session and per domain. Compare: does PubMed converge faster than AITA? A faster $T^*$ on PubMed would support the hypothesis that domains with stronger prior structure are easier to discover conversationally.
+**Convergence point $T^*$.** Define $T^* = \min\{t : \Delta S_t < \varepsilon \text{ for 3 consecutive turns}\}$ where $\varepsilon$ is the minimum meaningful schema change (e.g., $\varepsilon = 1.0$ in the weighted scale above). Report $T^*$ per session and per domain. Compare: does Wikipedia History converge faster than AITA? A faster $T^*$ on Wikipedia would support the hypothesis that domains with stronger prior structure are easier to discover conversationally.
 
 ---
 
@@ -179,11 +179,10 @@ $$\text{SDR} = \frac{|\text{schema modification proposals during batch extractio
 
 1. For each dataset, generate **30 factual questions** from the source documents using a dedicated LLM prompt that explicitly prohibits questions about schema structure. Questions must be answerable from the text alone. Use a different model from the one used for extraction (e.g., use Claude for question generation if GPT-4o was used for extraction) to avoid systematic alignment.
 
-2. Answer each question using four retrieval systems:
+2. Answer each question using up to three retrieval systems:
    - **Graph-HITL**: GraphRAG over the HITL knowledge graph
-   - **Graph-ZeroShot**: GraphRAG over the Zero-Shot graph
-   - **Graph-OpenIE**: GraphRAG over the OpenIE graph
-   - **Plain-RAG**: standard vector similarity retrieval over raw text (no graph)
+   - **Graph-ZeroShot** *(optional)*: GraphRAG over the Zero-Shot (v0) graph for ablation
+   - **Plain-RAG**: word-overlap retrieval over raw document text (no graph, no embeddings)
 
 3. Evaluate each answer using **LLM-as-judge with source passage as evidence** — following the FactCheck pipeline, not against the graph. The prompt is: *"Given this passage from the original document, does this answer correctly address the question? Answer YES/NO with a brief justification."* The source passage is retrieved via standard RAG, independent of the graph.
 
@@ -213,7 +212,7 @@ $$J(R_A, R_B) = \frac{|R_A \cap R_B|}{|R_A \cup R_B|}$$
 
 **Rationale.** ISA has two possible outcomes, both scientifically interesting:
 - **High ISA** (similar schemas from different users): the domain has a discoverable canonical ontology, and the system reliably finds it.
-- **Low ISA** (divergent schemas): the ontology is genuinely subjective. This is itself a contribution — it quantifies the ontological ambiguity of the domain. Compare ISA(AITA) vs ISA(PubMed): the hypothesis is that PubMed should yield higher agreement because the scientific domain has stronger prior structure.
+- **Low ISA** (divergent schemas): the ontology is genuinely subjective. This is itself a contribution — it quantifies the ontological ambiguity of the domain. Compare ISA(AITA) vs ISA(Wikipedia): the hypothesis is that Wikipedia History should yield higher agreement because the factual/historical domain has stronger prior structure.
 
 ---
 
@@ -230,7 +229,7 @@ $$J(R_A, R_B) = \frac{|R_A \cap R_B|}{|R_A \cup R_B|}$$
 | C | C1 — UIR | No | RQ2 | HITL vs Zero-Shot |
 | C | C2 — SDR | No | RQ2 | HITL vs Zero-Shot |
 | D | D1 — QA | Source text only | RQ1 | All systems + Plain-RAG |
-| E | E1 — ISA | No | RQ2+RQ3 | AITA vs PubMed |
+| E | E1 — ISA | No | RQ2+RQ3 | AITA vs Wikipedia History |
 
 ---
 

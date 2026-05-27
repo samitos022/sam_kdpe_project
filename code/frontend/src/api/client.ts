@@ -57,10 +57,13 @@ export const api = {
 
   // ─── Extraction ────────────────────────────────────────────────────────────
 
-  startExtraction: (sessionId: string) =>
-    req<{ message: string; total_documents: number }>(`/sessions/${sessionId}/extract`, {
-      method: "POST",
-    }),
+  startExtraction: (sessionId: string, maxDocs?: number) => {
+    const qs = maxDocs != null ? `?max_docs=${maxDocs}` : "";
+    return req<{ message: string; total_documents: number; capped: boolean }>(
+      `/sessions/${sessionId}/extract${qs}`,
+      { method: "POST" },
+    );
+  },
 
   getExtractionStatus: (sessionId: string) =>
     req<ExtractionStatus>(`/sessions/${sessionId}/extract/status`),

@@ -54,11 +54,11 @@ export function useExtraction(sessionId: string | null) {
 
   // ── Start ────────────────────────────────────────────────────────────────────
 
-  const startExtraction = useCallback(async () => {
+  const startExtraction = useCallback(async (maxDocs?: number) => {
     if (!sessionId) return;
     setError(null);
     try {
-      await api.startExtraction(sessionId);
+      await api.startExtraction(sessionId, maxDocs);
       setStatus((s) => ({ ...s, status: "running" }));
       startPolling();
     } catch (e) {
