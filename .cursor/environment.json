@@ -1,0 +1,25 @@
+{
+  "name": "KDPE — Knowledge Discovery & Pattern Extraction",
+  "user": "ubuntu",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "neo4j",
+      "command": "export JAVA_HOME=$(dirname $(dirname $(readlink -f $(command -v java)))); exec \"$HOME/neo4j/bin/neo4j\" console"
+    },
+    {
+      "name": "backend",
+      "command": "cd code && . .venv/bin/activate && echo 'Waiting for Neo4j on :7687...'; for i in $(seq 1 90); do (exec 3<>/dev/tcp/localhost/7687) 2>/dev/null && { exec 3>&-; echo 'Neo4j is up'; break; }; sleep 2; done; exec uvicorn backend.app:app --host 0.0.0.0 --port 8000"
+    },
+    {
+      "name": "frontend",
+      "command": "cd code/frontend && exec npx vite --host 0.0.0.0 --port 5173"
+    }
+  ],
+  "ports": [
+    { "name": "frontend", "port": 5173 },
+    { "name": "backend", "port": 8000 },
+    { "name": "neo4j-browser", "port": 7474 },
+    { "name": "neo4j-bolt", "port": 7687 }
+  ]
+}
